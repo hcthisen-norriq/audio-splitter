@@ -31,7 +31,7 @@ Audio Splitter API is a FastAPI service that splits audio files into chunks with
 **Run locally**:
 ```bash
 python app.py
-# Or with uvicorn directly:
+# Or with uvicorn for auto-reload during development:
 uvicorn app:app --reload --host 0.0.0.0 --port 8000
 ```
 
@@ -46,6 +46,20 @@ docker run -p 8000:8000 audio-splitter
 pip install -r requirements.txt
 # System dependency: ffmpeg must be installed
 ```
+
+**Test the API**:
+```bash
+# Health check
+curl http://localhost:8000/health
+
+# Split a file (returns signed URLs)
+curl -X POST http://localhost:8000/split -F "file=@audio.mp3" -F "chunk_ms=60000"
+
+# Split with base64 response (no file storage)
+curl -X POST http://localhost:8000/split -F "file=@audio.mp3" -F "return_mode=base64"
+```
+
+**Interactive API docs**: Available at `http://localhost:8000/docs` (Swagger UI) when running locally.
 
 ## Environment Variables
 
@@ -65,3 +79,19 @@ pip install -r requirements.txt
 - `return_mode="urls"`: Store files and return signed URLs with expiry (default)
 
 **Dependencies**: pydub requires ffmpeg to be installed at the system level (handled in Dockerfile via apt-get).
+
+## Concurrency Hardening
+
+The service is designed to handle simultaneous requests from multiple users:
+
+**Job isolation**: Each request gets a 128-bit unique job_id (`secrets.token_hex(16)`), making collisions virtually impossible even under extreme load.
+
+**Atomic file writes**: Audio chunks are written to temp files first, then atomically renamed to final paths. This prevents serving partial/corrupted files.
+
+**Thread pool execution**: CPU-bound pydub/ffmpeg operations run in a `ThreadPoolExecutor` to avoid blocking the async event loop during concurrent requests.
+
+**Active job tracking**: An in-memory set (`_active_jobs`) with async lock prevents the janitor from deleting jobs that are still being processed.
+
+**Completion markers**: A `.complete` file is written after all chunks are saved. The `/get` endpoint checks for this marker before serving files.
+
+**Path traversal protection**: Regex validation on `job_id` (`^[a-f0-9]{32}$`) and `filename` (`^\d+\.(mp3|wav|flac|ogg)$`) prevents directory traversal attacks.
